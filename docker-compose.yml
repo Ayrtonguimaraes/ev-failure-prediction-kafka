@@ -58,12 +58,14 @@ services:
     image: danielqsj/kafka-exporter:v1.7.0
     container_name: kafka-exporter
     command:
-      - "--kafka.server=kafka:29092"
+    - "--kafka.server=kafka:29092"
     ports:
       - "9308:9308"
     depends_on:
       - kafka
+    restart: unless-stopped
     mem_limit: 128mb
+
 
   prometheus:
     image: prom/prometheus:v2.49.1
