@@ -1,11 +1,18 @@
 global:
-  scrape_interval: 1s # Ele vai checar os dados a cada 1 segundo
+  scrape_interval: 1s 
 
 scrape_configs:
-  - job_name: 'kafka-metrics'
+  # 1. Métricas de Lag e Offsets (Kafka Exporter)
+  - job_name: 'kafka-lag-metrics'
     static_configs:
       - targets: ['kafka-exporter:9308']
 
+  # 2. Métricas Internas: Vazão, CPU, Heap (JMX Exporter)
+  - job_name: 'kafka-jmx-metrics'
+    static_configs:
+      - targets: ['jmx-exporter:5556']
+
+  # 3. Métricas de Latência Real (Seu Script Python)
   - job_name: 'python-consumer'
     static_configs:
-      - targets: ['host.docker.internal:8000'] # Onde seu script Python enviará dados depois
+      - targets: ['host.docker.internal:8000']

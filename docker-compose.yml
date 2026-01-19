@@ -10,6 +10,8 @@ services:
     mem_limit: 256mb
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - ev-network
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -18,57 +20,79 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
-      - "9999:9999"
+      - "9999:9999" # Porta JMX exposta para o JMX Exporter
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
 
-      # Listeners
+      # Listeners (Corretos)
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
 
-      # Número de Partições
+      # Configuração para Tese (Escalabilidade)
       KAFKA_NUM_PARTITIONS: 3
-
-      # Kafka internals
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0 # Acelera startup em dev
 
-      # Heap (seguro para Docker)
-      KAFKA_HEAP_OPTS: "-Xms384M -Xmx384M"
-
-      # JMX
-      JMX_PORT: 9999
-    mem_limit: 1gb
+      # Recursos (Ajustado para 512m para estabilidade)
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+      
+      # Exposição JMX para Monitoramento
+      KAFKA_JMX_PORT: 9999
+      KAFKA_JMX_HOSTNAME: kafka
+    mem_limit: 1.5gb # Margem de segurança para o OS do container
     volumes:
       - kafka_data:/var/lib/kafka/data
+    networks:
+      - ev-network
 
-  postgres:
-    image: postgres:15
-    container_name: postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
-    mem_limit: 512mb
+  # NOVO: Coletor de Métricas JMX (A ponte entre Kafka e Prometheus)
+  # Necessário para medir Vazão interna e uso de CPU/JVM
+  kafka-jmx-exporter:
+    image: bitnami/jmx-exporter:latest
+    container_name: jmx-exporter
+    command: ["5556", "/etc/jmx_exporter/config.yml"]
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./jmx_prometheus_config.yml:/etc/jmx_exporter/config.yml
+    ports:
+      - "5556:5556"
+    depends_on:
+      - kafka
+    networks:
+      - ev-network
 
+  # Coletor de Lag e Offsets (Mantido o seu, é excelente para Lag)
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
     container_name: kafka-exporter
     command:
-    - "--kafka.server=kafka:29092"
+      - "--kafka.server=kafka:29092"
     ports:
       - "9308:9308"
     depends_on:
       - kafka
     restart: unless-stopped
     mem_limit: 128mb
+    networks:
+      - ev-network
 
+  # Atualizado para PostGIS (Suporte Geoespacial para a Tese)
+  postgres:
+    image: postgis/postgis:15-3.4
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-user_ev}         # Valor default caso falte .env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pass_ev}
+      POSTGRES_DB: ${POSTGRES_DB:-db_telemetria}
+    ports:
+      - "5432:5432"
+    mem_limit: 512mb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ev-network
 
   prometheus:
     image: prom/prometheus:v2.49.1
@@ -80,7 +104,10 @@ services:
       - "9090:9090"
     depends_on:
       - kafka-exporter
-    mem_limit: 256mb
+      - kafka-jmx-exporter
+    mem_limit: 512mb
+    networks:
+      - ev-network
 
   grafana:
     image: grafana/grafana:10.2.3
@@ -91,6 +118,12 @@ services:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
+    networks:
+      - ev-network
+
+networks:
+  ev-network:
+    driver: bridge
 
 volumes:
   zookeeper_data:
