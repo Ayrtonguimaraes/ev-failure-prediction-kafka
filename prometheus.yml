@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s # Ele vai checar os dados a cada 5 segundos
+
+scrape_configs:
+  - job_name: 'kafka-metrics'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
+  - job_name: 'python-consumer'
+    static_configs:
+      - targets: ['host.docker.internal:8000'] # Onde seu script Python enviará dados depois
