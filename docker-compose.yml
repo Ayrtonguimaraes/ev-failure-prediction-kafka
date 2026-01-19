@@ -1,14 +1,19 @@
+version: "3.8"
+
 services:
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     mem_limit: 256mb
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
     depends_on:
       - zookeeper
     ports:
@@ -17,18 +22,28 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # Listeners
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Kafka internals
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+
+      # Heap (seguro para Docker)
+      KAFKA_HEAP_OPTS: "-Xms384M -Xmx384M"
+
+      # JMX
       JMX_PORT: 9999
     mem_limit: 1gb
     volumes:
       - kafka_data:/var/lib/kafka/data
 
   postgres:
-    image: postgres:latest
+    image: postgres:15
+    container_name: postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -40,8 +55,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
-    command: ["--kafka.server=kafka:29092"]
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    command:
+      - "--kafka.server=kafka:29092"
     ports:
       - "9308:9308"
     depends_on:
@@ -49,7 +66,8 @@ services:
     mem_limit: 128mb
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.49.1
+    container_name: prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -60,7 +78,8 @@ services:
     mem_limit: 256mb
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.2.3
+    container_name: grafana
     ports:
       - "3000:3000"
     depends_on:
