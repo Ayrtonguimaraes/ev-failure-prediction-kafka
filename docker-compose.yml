@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  # Zookeeper: Responsável pelo consenso e gestão do cluster
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    mem_limit: 256mb # Limite de memória do container no Docker
+
+  # Kafka Broker: Onde os dados de telemetria serão processados
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092" # Porta para o seu script Python se conectar
+      - "9999:9999" # Porta JMX para monitorarmos o desempenho depois
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Configurações para o Kafka funcionar dentro e fora do Docker
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # IMPORTANTE: Limite de memória RAM para o seu notebook
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+      JMX_PORT: 9999
+    mem_limit: 1gb # Limite máximo de segurança que o Docker pode usar
