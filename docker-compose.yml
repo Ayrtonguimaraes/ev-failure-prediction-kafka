@@ -1,11 +1,9 @@
-version: '3.8'
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:latest
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_HEAP_OPTS: "-Xms256M -Xmx256M"
+    mem_limit: 256mb
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
 
@@ -15,6 +13,7 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
+      - "9999:9999"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -22,7 +21,9 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_HEAP_OPTS: "-Xms768M -Xmx768M"
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+      JMX_PORT: 9999
+    mem_limit: 1gb
     volumes:
       - kafka_data:/var/lib/kafka/data
 
@@ -34,6 +35,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
+    mem_limit: 512mb
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -44,6 +46,7 @@ services:
       - "9308:9308"
     depends_on:
       - kafka
+    mem_limit: 128mb
 
   prometheus:
     image: prom/prometheus:latest
@@ -54,15 +57,16 @@ services:
       - "9090:9090"
     depends_on:
       - kafka-exporter
+    mem_limit: 256mb
 
   grafana:
     image: grafana/grafana:latest
     ports:
       - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
 
 volumes:
   zookeeper_data:
