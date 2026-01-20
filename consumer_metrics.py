@@ -1,90 +1,87 @@
 import json
 import time
 import sys
+import csv
+import os
 from confluent_kafka import Consumer, KafkaError
 from prometheus_client import start_http_server, Summary, Counter, Gauge
-import csv
 
-# --- Definição de Métricas (O Coração da Tese) ---
+# --- Definição de Métricas ---
+LATENCY_METRIC = Summary('ev_latency_seconds', 'Latência End-to-End')
+MESSAGES_PROCESSED = Counter('ev_messages_total', 'Total de mensagens processadas')
+LAST_MSG_AGE = Gauge('ev_last_msg_age_seconds', 'Idade da última mensagem')
 
-# 1. Latência (Histograma/Summary)
-# O Summary calcula automaticamente quantis (P50, P90, P99) no client-side.
-# P99 é vital para detectar "tail latency" em sistemas de tempo real.
-LATENCY_METRIC = Summary('ev_latency_seconds', 'Latência End-to-End (Producer -> Metrics Consumer)')
-
-# 2. Vazão (Contador)
-# O Grafana usará isso para calcular "Mensagens por Segundo" com a função rate()
-MESSAGES_PROCESSED = Counter('ev_messages_total', 'Total de mensagens processadas pelo consumidor de métricas')
-
-# 3. Lag de Tempo Real (Gauge)
-# Mostra a diferença entre "agora" e a mensagem mais recente processada.
-# Útil para saber se o consumidor está "ficando para trás" em tempo real.
-LAST_MSG_AGE = Gauge('ev_last_msg_age_seconds', 'Idade da última mensagem processada')
-
-# Configuração Kafka
-kafka_config = {
-    'bootstrap.servers': 'localhost:9092',
-    'group.id': 'ev-metrics-group', # Grupo isolado para receber cópia total dos dados
-    'auto.offset.reset': 'latest',  # Em testes de latência, queremos o "agora"
-    'enable.auto.commit': True
-}
-
-# Configuração do Arquivo de Log
+# --- Configuração do Arquivo CSV (Tese) ---
+# Cria um nome único baseado no tempo para não sobrescrever testes anteriores
 LOG_FILE = f"resultados_tese_{int(time.time())}.csv"
 
 # Cria o arquivo e escreve o cabeçalho
+print(f"--- Salvando dados brutos em: {LOG_FILE} ---")
 with open(LOG_FILE, mode='w', newline='') as f:
     writer = csv.writer(f)
     writer.writerow(["timestamp_leitura", "vehicle_id", "latencia_segundos"])
 
-print(f"--- Salvando dados brutos em: {LOG_FILE} ---")
+# --- Configuração Kafka ---
+kafka_config = {
+    'bootstrap.servers': 'localhost:9092',
+    'group.id': 'ev-metrics-group', 
+    'auto.offset.reset': 'latest',
+    'enable.auto.commit': True
+}
 
 def main():
-    # Inicia servidor HTTP para o Prometheus coletar
     start_http_server(8000)
     print("--- Monitor de Métricas Ativo (Porta 8000) ---")
-    print("Métricas: ev_latency_seconds, ev_messages_total")
 
     consumer = Consumer(kafka_config)
     consumer.subscribe(['telemetria_ev'])
 
     try:
-        # Abre o arquivo em modo 'append' (adicionar ao final)
-        with open(LOG_FILE, mode='a', newline='') as f: # <--- 2. Abre arquivo
+        # A CORREÇÃO ESTÁ AQUI:
+        # O arquivo abre aqui e mantemos ele aberto durante todo o loop
+        with open(LOG_FILE, mode='a', newline='') as f:
             writer = csv.writer(f)
-        while True:
-            msg = consumer.poll(1.0) # Timeout de 1s para não bloquear CPU em loop infinito
+            
+            while True:
+                msg = consumer.poll(1.0)
 
-            if msg is None:
-                continue
-            
-            if msg.error():
-                if msg.error().code() == KafkaError._PARTITION_EOF:
-                    continue
-                else:
-                    print(f"Erro Kafka: {msg.error()}")
-                    continue
-            
-            try:
+                if msg is None: continue
+                if msg.error():
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
+                        continue
+                    else:
+                        print(f"Erro Kafka: {msg.error()}")
+                        continue
+                
+                try:
                     payload = json.loads(msg.value().decode('utf-8'))
-                    ts_now = time.time()
-                    latencia = ts_now - payload['ts_envio']
                     
-                    # Atualiza Prometheus (Mantém o Grafana vivo)
+                    ts_now = time.time()
+                    ts_envio = payload['ts_envio']
+                    latencia = ts_now - ts_envio
+                    
+                    # 1. Atualiza Prometheus
                     LATENCY_METRIC.observe(latencia)
                     MESSAGES_PROCESSED.inc()
+                    LAST_MSG_AGE.set(latencia)
                     
-                    # <--- 3. SALVA NO CSV PARA A TESE
+                    # 2. Salva no CSV
                     writer.writerow([ts_now, payload['vehicle_id'], latencia])
                     
-                    # Print Debug
+                    # IMPORTANTE: Força a gravação no disco imediatamente
+                    # (Evita perder dados se der Ctrl+C)
+                    f.flush() 
+                    
+                    # 3. Debug Visual
                     print(f"[<] {payload['vehicle_id']} | Lat: {latencia:.4f}s")
-                
-            except KeyError:
-                print("Erro: JSON sem campo 'ts_envio'. Verifique o Producer.")
-                
+                    
+                except KeyError:
+                    print("Erro: JSON incompleto.")
+                except Exception as e:
+                    print(f"Erro processamento: {e}")
+                    
     except KeyboardInterrupt:
-        print("Encerrando monitor...")
+        print("\nEncerrando e fechando arquivo...")
     finally:
         consumer.close()
 
