@@ -1,88 +1,130 @@
 import json
 import time
-import sys
 import csv
+import sys
 import os
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, KafkaError, TopicPartition
 from prometheus_client import start_http_server, Summary, Counter, Gauge
 
-# --- Definição de Métricas ---
+# --- Métricas Prometheus ---
 LATENCY_METRIC = Summary('ev_latency_seconds', 'Latência End-to-End')
-MESSAGES_PROCESSED = Counter('ev_messages_total', 'Total de mensagens processadas')
-LAST_MSG_AGE = Gauge('ev_last_msg_age_seconds', 'Idade da última mensagem')
+CONSUMER_LAG = Gauge('ev_consumer_lag', 'Consumer Lag')
+MSG_RATE = Gauge('ev_throughput_mps', 'Throughput')
 
-# --- Configuração do Arquivo CSV (Tese) ---
-# Cria um nome único baseado no tempo para não sobrescrever testes anteriores
-LOG_FILE = f"resultados_tese_{int(time.time())}.csv"
+LOG_FILE = "metrics_speed_layer.csv"
 
-# Cria o arquivo e escreve o cabeçalho
-print(f"--- Salvando dados brutos em: {LOG_FILE} ---")
-with open(LOG_FILE, mode='w', newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(["timestamp_leitura", "vehicle_id", "latencia_segundos"])
-
-# --- Configuração Kafka ---
 kafka_config = {
     'bootstrap.servers': 'localhost:9092',
-    'group.id': 'ev-metrics-group', 
+    'group.id': 'ev-metrics-SPEED-V4', 
     'auto.offset.reset': 'latest',
-    'enable.auto.commit': True
+    'enable.auto.commit': True,
 }
 
+def get_lag(consumer, topic, partition):
+    try:
+        tp = TopicPartition(topic, partition)
+        low, high = consumer.get_watermark_offsets(tp, timeout=1.0)
+        pos = consumer.position([tp])
+        if pos and pos[0].offset != KafkaError.OFFSET_INVALID:
+            return high - pos[0].offset
+    except Exception:
+        return 0
+    return 0
+
 def main():
-    start_http_server(8000)
-    print("--- Monitor de Métricas Ativo (Porta 8000) ---")
+    # Inicia servidor Prometheus
+    try:
+        start_http_server(8000)
+        print("--- Metrics Monitor Ativo (Porta 8000) ---")
+    except Exception as e:
+        print(f"Aviso Prometheus: {e}")
 
     consumer = Consumer(kafka_config)
     consumer.subscribe(['telemetria_ev'])
 
-    try:
-        # A CORREÇÃO ESTÁ AQUI:
-        # O arquivo abre aqui e mantemos ele aberto durante todo o loop
-        with open(LOG_FILE, mode='a', newline='') as f:
-            writer = csv.writer(f)
-            
-            while True:
-                msg = consumer.poll(1.0)
+    # Abre com buffer=1 (line buffering) para garantir escrita
+    # Se o arquivo já existir, 'w' vai sobrescrever.
+    csv_file = open(LOG_FILE, mode='w', newline='', buffering=1)
+    writer = csv.writer(csv_file)
+    
+    # Cabeçalho para Análise (Lazidis et al.)
+    writer.writerow(["ts_consumo", "lag", "throughput", "avg_latencia", "max_latencia"])
+    csv_file.flush()
+    os.fsync(csv_file.fileno())
 
-                if msg is None: continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    else:
-                        print(f"Erro Kafka: {msg.error()}")
-                        continue
+    msg_count_window = 0
+    latencias_window = [] # Buffer para calcular estatísticas do segundo
+    last_tick = time.time()
+
+    print("--- Aguardando mensagens... ---")
+
+    try:
+        while True:
+            msg = consumer.poll(0.5)
+
+            if msg is None: continue
+            if msg.error(): continue
+
+            try:
+                payload = json.loads(msg.value())
+                ts_now = time.time()
+                ts_envio = float(payload['ts_envio'])
                 
-                try:
-                    payload = json.loads(msg.value().decode('utf-8'))
+                latencia = ts_now - ts_envio
+                
+                # Prometheus
+                LATENCY_METRIC.observe(latencia)
+                
+                # Acumuladores para o CSV
+                msg_count_window += 1
+                latencias_window.append(latencia)
+
+                # Monitoramento Periódico (A cada 1.0s)
+                if (ts_now - last_tick) >= 1.0:
+                    # 1. Coleta Lag
+                    lag = get_lag(consumer, msg.topic(), msg.partition())
                     
-                    ts_now = time.time()
-                    ts_envio = payload['ts_envio']
-                    latencia = ts_now - ts_envio
+                    # 2. Atualiza Prometheus Gauges
+                    CONSUMER_LAG.set(lag)
+                    MSG_RATE.set(msg_count_window)
                     
-                    # 1. Atualiza Prometheus
-                    LATENCY_METRIC.observe(latencia)
-                    MESSAGES_PROCESSED.inc()
-                    LAST_MSG_AGE.set(latencia)
+                    # 3. Cálculos Estatísticos
+                    if latencias_window:
+                        avg_lat = sum(latencias_window) / len(latencias_window)
+                        max_lat = max(latencias_window)
+                    else:
+                        avg_lat = 0.0
+                        max_lat = 0.0
                     
-                    # 2. Salva no CSV
-                    writer.writerow([ts_now, payload['vehicle_id'], latencia])
+                    # 4. Escreve no CSV
+                    writer.writerow([
+                        f"{ts_now:.2f}", 
+                        lag, 
+                        msg_count_window, 
+                        f"{avg_lat:.4f}", 
+                        f"{max_lat:.4f}"
+                    ])
                     
-                    # IMPORTANTE: Força a gravação no disco imediatamente
-                    # (Evita perder dados se der Ctrl+C)
-                    f.flush() 
+                    # 5. GARANTIA DE DISCO (FLUSH)
+                    csv_file.flush() 
+                    os.fsync(csv_file.fileno())
                     
-                    # 3. Debug Visual
-                    print(f"[<] {payload['vehicle_id']} | Lat: {latencia:.4f}s")
+                    # 6. Reset Window
+                    msg_count_window = 0
+                    latencias_window = [] 
+                    last_tick = ts_now
                     
-                except KeyError:
-                    print("Erro: JSON incompleto.")
-                except Exception as e:
-                    print(f"Erro processamento: {e}")
-                    
+                    # Log Visual apenas se houver problema
+                    if lag > 2000:
+                        print(f"[ALERTA] Lag Alto: {lag}")
+
+            except Exception:
+                pass
+
     except KeyboardInterrupt:
-        print("\nEncerrando e fechando arquivo...")
+        print("\nSalvando e fechando Metrics...")
     finally:
+        csv_file.close()
         consumer.close()
 
 if __name__ == '__main__':

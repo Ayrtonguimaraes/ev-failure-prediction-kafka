@@ -1,38 +1,34 @@
-# Configuração do JMX Exporter para Kafka
-# Aponta para o container do Kafka na porta JMX definida no docker-compose
+# Configuração do JMX Exporter
 hostPort: kafka:9999
 ssl: false
 lowercaseOutputName: true
 lowercaseOutputLabelNames: true
 
 rules:
-  # --- MÉTRICAS DE VAZÃO (THROUGHPUT) ---
-  # Fundamental para o eixo "Vazão" do triângulo de Lazidis
+  # Throughput
   - pattern: kafka.server<type=BrokerTopicMetrics, name=(MessagesInPerSec|BytesInPerSec|BytesOutPerSec)><>(Count|OneMinuteRate)
     name: kafka_server_brokertopicmetrics_$1
     labels:
       rate: "$2"
 
-  # --- MÉTRICAS DE RECURSOS (Check de Saúde do Notebook) ---
-  # Uso de Memória Heap (Vital para não travar seu Docker)
+  # Heap Memory
   - pattern: java.lang<type=Memory><HeapMemoryUsage>(Used|Max)
     name: kafka_jvm_heap_memory_usage_$1
 
-  # Uso de CPU do Broker
+  # CPU Load
   - pattern: java.lang<type=OperatingSystem><>(ProcessCpuLoad|SystemCpuLoad)
     name: kafka_jvm_os_$1
 
-  # --- MÉTRICAS DE PERFORMANCE DO BROKER ---
-  # Latência de requisição interna (Request Queue Time)
+  # Latência Interna (Request Queue)
   - pattern: kafka.network<type=RequestMetrics, name=RequestQueueTimeMs, request=Produce><>(99thPercentile|Count)
     name: kafka_network_requestmetrics_requestqueuetimems_produce
     labels:
       quantile: "$1"
 
-  # Percentual de tempo que o Kafka fica ocioso (Se for 0%, o broker está saturado)
+  # Idle Percent (Saturação da CPU do Kafka)
   - pattern: kafka.server<type=KafkaRequestHandlerPool, name=RequestHandlerAvgIdlePercent><>(OneMinuteRate)
     name: kafka_server_kafkarequesthandlerpool_requesthandleravgidlepercent
 
-  # Réplicas fora de sincronia (Métrica de Durabilidade/Confiabilidade)
+  # Under Replicated Partitions (Saúde do Cluster)
   - pattern: kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>(Value)
     name: kafka_server_replicamanager_underreplicatedpartitions
