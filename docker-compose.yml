@@ -8,6 +8,7 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     mem_limit: 256mb
+    restart: unless-stopped
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
     networks:
@@ -20,16 +21,14 @@ services:
       - zookeeper
     ports:
       - "9092:9092"
-      - "9999:9999" # Porta JMX para o Exporter
+      - "9999:9999"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # Listeners configurados perfeitamente para acesso interno e externo
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      # Tese tuning
       KAFKA_NUM_PARTITIONS: 3
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
@@ -37,6 +36,7 @@ services:
       KAFKA_JMX_PORT: 9999
       KAFKA_JMX_HOSTNAME: kafka
     mem_limit: 1.5gb
+    restart: unless-stopped
     volumes:
       - kafka_data:/var/lib/kafka/data
     networks:
@@ -118,7 +118,7 @@ services:
       - grafana_data:/var/lib/grafana
     networks:
       - ev-network
-    
+
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: mosquitto
@@ -126,8 +126,10 @@ services:
       - "1883:1883"
       - "9001:9001"
     volumes:
-      # Monta o arquivo de configuração criado acima
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+    mem_limit: 128mb
+    restart: unless-stopped
     networks:
       - ev-network
 
@@ -141,3 +143,4 @@ volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
+  mosquitto_data:
