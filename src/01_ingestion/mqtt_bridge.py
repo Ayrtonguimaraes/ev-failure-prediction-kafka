@@ -1,116 +1,71 @@
-"""Bridge MQTT -> Kafka com tratamento de backpressure e particionamento por veículo."""
-import sys
 import time
 import paho.mqtt.client as mqtt
-from confluent_kafka import Producer
+from confluent_kafka import Producer, BufferError
 
-# --- Configuração ---
+# --- CONFIGURAÇÕES ---
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
-MQTT_TOPIC = "sensores/ev/+"
+MQTT_TOPIC = "sensores/ev/+" 
+
+KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 KAFKA_TOPIC = "telemetria_ev"
 
-# Tuning do Kafka Producer (Mostefaoui et al.)
-kafka_conf = {
-    'bootstrap.servers': 'localhost:9092',
-    'client.id': 'mqtt_kafka_bridge',
-    'compression.type': 'snappy',
-    'linger.ms': 5,
-    'batch.size': 32768,
-    'acks': '1',
-    'queue.buffering.max.messages': 100000,
-    'queue.buffering.max.kbytes': 1048576,
+conf = {
+    'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+    'client.id': 'python-mqtt-bridge',
+    'linger.ms': 0,
+    'compression.type': 'snappy'
 }
-
-producer = Producer(kafka_conf)
-
-# Contadores para monitoramento
-_stats = {'sent': 0, 'errors': 0, 'retries': 0}
-
+producer = Producer(conf)
 
 def delivery_report(err, msg):
-    """Callback de confirmação de entrega ao Kafka."""
     if err is not None:
-        _stats['errors'] += 1
-        print(f"[ERRO] Falha na entrega: {err}", file=sys.stderr)
+        print(f'❌ Erro Kafka: {err}')
 
-
-def extract_vehicle_id(topic: str) -> str:
-    """Extrai vehicle_id do tópico MQTT (sensores/ev/{vehicle_id})."""
-    try:
-        return topic.split('/')[-1]
-    except Exception:
-        return topic
-
+def on_connect(client, userdata, flags, rc):
+    print(f"🔌 Ponte conectada ao Mosquitto (Código: {rc})")
+    client.subscribe(MQTT_TOPIC)
 
 def on_message(client, userdata, msg):
-    """Callback para cada mensagem MQTT recebida."""
-    topic_str = msg.topic if isinstance(msg.topic, str) else msg.topic.decode('utf-8')
-    vehicle_id = extract_vehicle_id(topic_str)
+    payload = msg.payload.decode('utf-8')
     
-    max_retries = 5
-    for attempt in range(1, max_retries + 1):
-        try:
-            producer.produce(
-                KAFKA_TOPIC,
-                key=vehicle_id,
-                value=msg.payload,
-                on_delivery=delivery_report
-            )
-            producer.poll(0)
-            _stats['sent'] += 1
-            return
-        except BufferError:
-            _stats['retries'] += 1
-            wait = min(1.0, 0.1 * (2 ** (attempt - 1)))
-            print(f"[AVISO] Buffer cheio (tentativa {attempt}/{max_retries}). Aguardando {wait:.2f}s...")
-            producer.poll(wait)
-        except Exception as e:
-            _stats['errors'] += 1
-            print(f"[ERRO] Bridge: {e}", file=sys.stderr)
-            return
+    # --- RASTREABILIDADE TOTAL ---
+    # Capturamos o tempo exato que a mensagem chegou na ponte
+    # Multiplicamos por 1000 para ter em milissegundos (igual ao Java/JS)
+    ts_chegada_ponte = int(time.time() * 1000)
     
-    print(f"[ERRO] Descartando mensagem após {max_retries} tentativas.", file=sys.stderr)
-    _stats['errors'] += 1
+    # Criamos os Headers (Metadados)
+    # Kafka Headers esperam valores em bytes
+    headers = [
+        ('trace_bridge_ts', str(ts_chegada_ponte).encode('utf-8')),
+        ('origem_mqtt_topic', msg.topic.encode('utf-8'))
+    ]
 
-
-def on_connect(client, userdata, flags, rc, properties=None):
-    """Callback de conexão MQTT."""
-    if rc == 0:
-        print(f"[INFO] Conectado ao MQTT broker {MQTT_BROKER}:{MQTT_PORT}")
-        client.subscribe(MQTT_TOPIC)
-    else:
-        print(f"[ERRO] Falha na conexão MQTT: código {rc}", file=sys.stderr)
-
-
-def main():
-    # Setup MQTT client
     try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="mqtt_kafka_bridge")
-    except AttributeError:
-        client = mqtt.Client(client_id="mqtt_kafka_bridge")
-    
-    client.on_connect = on_connect
-    client.on_message = on_message
-    
-    try:
-        client.connect(MQTT_BROKER, MQTT_PORT)
-    except Exception as e:
-        print(f"[ERRO] Não foi possível conectar ao MQTT: {e}", file=sys.stderr)
-        sys.exit(1)
-    
-    print("--- Bridge MQTT->Kafka Iniciada (Snappy, BufferError Handling) ---")
-    
-    try:
-        client.loop_forever()
-    except KeyboardInterrupt:
-        print("\n[INFO] Encerrando bridge...")
-    finally:
-        print(f"[INFO] Estatísticas: Enviadas={_stats['sent']}, Erros={_stats['errors']}, Retries={_stats['retries']}")
-        producer.flush(timeout=10)
-        client.disconnect()
-        print("[INFO] Bridge encerrada.")
-
+        producer.produce(
+            topic=KAFKA_TOPIC,
+            key=msg.topic, 
+            value=payload,
+            headers=headers,  # <--- INJEÇÃO DOS HEADERS AQUI
+            callback=delivery_report
+        )
+        producer.poll(0)
+        
+    except BufferError:
+        print(f"⚠️ Kafka cheio! Freando...")
+        time.sleep(1)
+        producer.poll(1)
 
 if __name__ == '__main__':
-    main()
+    mqtt_client = mqtt.Client()
+    mqtt_client.on_connect = on_connect
+    mqtt_client.on_message = on_message
+
+    print(f"🚀 Ponte com Rastreabilidade Iniciada...")
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_forever()
+    except KeyboardInterrupt:
+        print("\n🛑 Parando...")
+        producer.flush()
+        mqtt_client.disconnect()
