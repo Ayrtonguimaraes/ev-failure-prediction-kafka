@@ -1,6 +1,5 @@
-version: "3.8"
-
 services:
+  # 1. Zookeeper: O Gerente
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -14,50 +13,43 @@ services:
     networks:
       - ev-network
 
+  # 2. Kafka: O Motor (Com Agente JMX Injetado)
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
-      - "9999:9999"
+      - "9092:9092"  # Acesso Externo (Python/Windows)
+      - "7071:7071"  # Acesso de Métricas (Prometheus)
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Configuração de Rede (Dual Listeners)
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Tuning de Partições (Tese: Paralelismo)
       KAFKA_NUM_PARTITIONS: 3
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Memória do Java (Heap)
       KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
-      KAFKA_JMX_PORT: 9999
-      KAFKA_JMX_HOSTNAME: kafka
-    mem_limit: 1.5gb
+      # --- A MÁGICA DA OBSERVABILIDADE (Agente Interno) ---
+      # Removemos KAFKA_JMX_PORT para evitar conflito.
+      # Injetamos o jar do agente direto no processo do Kafka.
+      KAFKA_OPTS: "-javaagent:/usr/share/java/cp-base-new/jmx_prometheus_javaagent-0.18.0.jar=7071:/etc/jmx_exporter/kafka-jmx-config.yml"
+    mem_limit: 1.5gb  # 512MB Java + Overhead + Page Cache
     restart: unless-stopped
     volumes:
       - kafka_data:/var/lib/kafka/data
+      # Mapeia o arquivo de configuração do agente para dentro do container
+      - ./jmx_prometheus_config.yml:/etc/jmx_exporter/kafka-jmx-config.yml
     networks:
       - ev-network
 
-  # Ponte JMX -> Prometheus
-  kafka-jmx-exporter:
-    image: bitnami/jmx-exporter:latest
-    container_name: jmx-exporter
-    # Conecta no Kafka via rede interna na porta 9999
-    command: ["5556", "/etc/jmx_exporter/config.yml"]
-    volumes:
-      - ./jmx_prometheus_config.yml:/etc/jmx_exporter/config.yml
-    ports:
-      - "5556:5556"
-    depends_on:
-      - kafka
-    networks:
-      - ev-network
-
-  # Métricas de Lag (Crucial para Lazidis et al.)
+  # 3. Kafka Exporter: Monitora o Lag (Atraso)
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.7.0
     container_name: kafka-exporter
@@ -72,6 +64,23 @@ services:
     networks:
       - ev-network
 
+  # 4. Mosquitto: Entrada IoT
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      # Caminho relativo para a pasta infra que criamos
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+    mem_limit: 128mb
+    restart: unless-stopped
+    networks:
+      - ev-network
+
+  # 5. PostgreSQL: Batch Layer
   postgres:
     image: postgis/postgis:15-3.4
     container_name: postgres
@@ -84,29 +93,35 @@ services:
     mem_limit: 512mb
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # --- ADICIONE ESTA LINHA ABAIXO ---
-      - ./schema.sql:/docker-entrypoint-initdb.d/init.sql
+      # Caminho relativo para a pasta infra
+      - ./infra/schema.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - ev-network
 
+  # 6. Prometheus: Coletor de Métricas
   prometheus:
     image: prom/prometheus:v2.49.1
     container_name: prometheus
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      # Caminho relativo para a pasta infra
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
+    command:
+      # Aponta explicitamente para o arquivo de configuração
+      - '--config.file=/etc/prometheus/prometheus.yml'
     depends_on:
       - kafka-exporter
-      - kafka-jmx-exporter
-    # CORREÇÃO CRÍTICA PARA LINUX/DOCKER
+      # Não depende mais de 'kafka-jmx-exporter' pois agora roda dentro do 'kafka'
+      - kafka 
     extra_hosts:
       - "host.docker.internal:host-gateway"
     mem_limit: 512mb
     networks:
       - ev-network
 
+  # 7. Grafana: Visualização
   grafana:
     image: grafana/grafana:10.2.3
     container_name: grafana
@@ -116,20 +131,6 @@ services:
       - prometheus
     volumes:
       - grafana_data:/var/lib/grafana
-    networks:
-      - ev-network
-
-  mosquitto:
-    image: eclipse-mosquitto:2.0
-    container_name: mosquitto
-    ports:
-      - "1883:1883"
-      - "9001:9001"
-    volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - mosquitto_data:/mosquitto/data
-    mem_limit: 128mb
-    restart: unless-stopped
     networks:
       - ev-network
 

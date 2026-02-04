@@ -1,34 +1,3 @@
-# Configuração do JMX Exporter
-hostPort: kafka:9999
-ssl: false
 lowercaseOutputName: true
-lowercaseOutputLabelNames: true
-
 rules:
-  # Throughput
-  - pattern: kafka.server<type=BrokerTopicMetrics, name=(MessagesInPerSec|BytesInPerSec|BytesOutPerSec)><>(Count|OneMinuteRate)
-    name: kafka_server_brokertopicmetrics_$1
-    labels:
-      rate: "$2"
-
-  # Heap Memory
-  - pattern: java.lang<type=Memory><HeapMemoryUsage>(Used|Max)
-    name: kafka_jvm_heap_memory_usage_$1
-
-  # CPU Load
-  - pattern: java.lang<type=OperatingSystem><>(ProcessCpuLoad|SystemCpuLoad)
-    name: kafka_jvm_os_$1
-
-  # Latência Interna (Request Queue)
-  - pattern: kafka.network<type=RequestMetrics, name=RequestQueueTimeMs, request=Produce><>(99thPercentile|Count)
-    name: kafka_network_requestmetrics_requestqueuetimems_produce
-    labels:
-      quantile: "$1"
-
-  # Idle Percent (Saturação da CPU do Kafka)
-  - pattern: kafka.server<type=KafkaRequestHandlerPool, name=RequestHandlerAvgIdlePercent><>(OneMinuteRate)
-    name: kafka_server_kafkarequesthandlerpool_requesthandleravgidlepercent
-
-  # Under Replicated Partitions (Saúde do Cluster)
-  - pattern: kafka.server<type=ReplicaManager, name=UnderReplicatedPartitions><>(Value)
-    name: kafka_server_replicamanager_underreplicatedpartitions
+  - pattern: ".*"
