@@ -1,23 +1,23 @@
 global:
-  scrape_interval: 1s 
-  evaluation_interval: 1s
+  scrape_interval: 5s # Coleta a cada 5 segundos (Alta resolução para Tese)
+  scrape_timeout: 4s
 
 scrape_configs:
-  # 1. Métricas de Lag e Offsets (Kafka Exporter - Interno Docker)
-  - job_name: 'kafka-lag-metrics'
+  # 1. MÉTRICAS DO CÓDIGO PYTHON (Sua Speed Layer)
+  # Fonte: speed_layer.py (Porta 8000)
+  - job_name: 'speed-layer'
+    static_configs:
+      - targets: ['host.docker.internal:8000'] 
+        # Nota: Usamos host.docker.internal porque o script roda no Windows, fora do Docker
+
+  # 2. CAIXA PRETA DO KAFKA (CPU, Memória, Threads, Bytes In/Out)
+  # Fonte: Agente JMX dentro do Kafka (Porta 7071)
+  - job_name: 'kafka-broker-jmx'
+    static_configs:
+      - targets: ['kafka:7071']
+
+  # 3. KAFKA LAG (Atraso de Consumo)
+  # Fonte: Container kafka-exporter (Porta 9308)
+  - job_name: 'kafka-lag-exporter'
     static_configs:
       - targets: ['kafka-exporter:9308']
-
-  # 2. Métricas Internas JVM/OS (JMX Exporter - Interno Docker)
-  - job_name: 'kafka-jmx-metrics'
-    static_configs:
-      - targets: ['kafka-jmx-exporter:5556'] 
-    # Nota: Ajustei o host para 'kafka-jmx-exporter' (nome do service no compose)
-    # O seu anterior estava 'jmx-exporter', que é o container_name. 
-    # Ambos funcionam, mas service name é melhor prática.
-
-  # 3. Métricas de Latência Real (Seu Script Python - No Host)
-  - job_name: 'python-consumer'
-    static_configs:
-      # Graças ao 'extra_hosts' no compose, isso agora funciona em Windows/Mac/Linux
-      - targets: ['host.docker.internal:8000']

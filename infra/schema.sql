@@ -1,16 +1,14 @@
-CREATE EXTENSION IF NOT EXISTS postgis;
-
-CREATE TABLE IF NOT EXISTS telemetria_ev (
+CREATE TABLE IF NOT EXISTS telemetria (
     id SERIAL PRIMARY KEY,
     vehicle_id VARCHAR(50),
-    battery_level FLOAT,
-    temperature FLOAT,
-    speed_kmh FLOAT,
-    location GEOMETRY(POINT, 4326),
-    ts_envio TIMESTAMP,
-    ts_persistencia TIMESTAMP DEFAULT NOW() -- Para auditar latência interna do banco
+    velocidade INT,
+    bateria INT,
+    temperatura_motor FLOAT,
+    latitude FLOAT,
+    longitude FLOAT,
+    ts_sensor TIMESTAMP, -- Hora que o dado nasceu no carro
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Hora que salvamos no banco
 );
 
--- Índice para consultas espaciais rápidas (Speed Layer geográfica)
-CREATE INDEX IF NOT EXISTS idx_telemetria_location ON telemetria_ev USING GIST (location);
-CREATE INDEX IF NOT EXISTS idx_telemetria_ts ON telemetria_ev (ts_envio);
+-- Cria um índice para deixar as consultas por carro mais rápidas
+CREATE INDEX idx_vehicle_id ON telemetria(vehicle_id);
