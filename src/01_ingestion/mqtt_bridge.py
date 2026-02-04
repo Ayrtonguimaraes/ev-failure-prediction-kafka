@@ -44,7 +44,8 @@ def on_message(client, userdata, msg):
     try:
         producer.produce(
             topic=KAFKA_TOPIC,
-            key=msg.topic, 
+            # key=msg.topic, 
+            key=None,
             value=payload,
             headers=headers,  # <--- INJEÇÃO DOS HEADERS AQUI
             callback=delivery_report
