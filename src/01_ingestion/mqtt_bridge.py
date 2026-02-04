@@ -1,6 +1,6 @@
 import time
 import paho.mqtt.client as mqtt
-from confluent_kafka import Producer, BufferError
+from confluent_kafka import Producer
 
 # --- CONFIGURAÇÕES ---
 MQTT_BROKER = "localhost"

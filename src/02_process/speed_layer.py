@@ -1,116 +1,112 @@
-"""Speed Layer Consumer - Métricas em tempo real via Prometheus."""
-import sys
+import json
 import time
-import os
-from confluent_kafka import Consumer, KafkaError, TopicPartition
-from prometheus_client import start_http_server, Summary, Counter, Gauge
+from confluent_kafka import Consumer, KafkaError
+from prometheus_client import start_http_server, Gauge, Counter, Summary
 
-try:
-    import orjson
-    JSON_LOADS = orjson.loads
-except ImportError:
-    import json
-    JSON_LOADS = json.loads
+# --- CONFIGURAÇÕES ---
+KAFKA_BROKER = "localhost:9092"
+KAFKA_TOPIC = "telemetria_ev"
+GROUP_ID = "ev-speed-layer-v1" # Importante: Identidade deste consumidor
 
-# --- Métricas Prometheus ---
-LATENCY_METRIC = Summary('ev_latency_seconds', 'Latência End-to-End')
-LATENCY_AVG = Gauge('ev_latency_avg_seconds', 'Latência Média (janela 1s)')
-LATENCY_MAX = Gauge('ev_latency_max_seconds', 'Latência Máxima (janela 1s)')
-CONSUMER_LAG = Gauge('ev_consumer_lag', 'Consumer Lag')
-MSG_RATE = Gauge('ev_throughput_mps', 'Throughput (msg/s)')
-MESSAGES_TOTAL = Counter('ev_messages_total', 'Total de mensagens processadas')
+# Porta onde o Prometheus vai buscar as métricas
+PROMETHEUS_PORT = 8000 
 
-PROMETHEUS_PORT = int(os.getenv('PROMETHEUS_PORT', '8000'))
+# --- DEFINIÇÃO DAS MÉTRICAS PROMETHEUS ---
+# 1. Contador: Quantas mensagens processamos no total?
+MSG_COUNTER = Counter('ev_processed_total', 'Total de mensagens processadas pela Speed Layer')
 
-KAFKA_CONFIG = {
-    'bootstrap.servers': os.getenv('KAFKA_BOOTSTRAP', 'localhost:9092'),
-    'group.id': 'ev-speed-consumer',
-    'auto.offset.reset': 'latest',
-    'enable.auto.commit': True,
-    'fetch.wait.max.ms': 50,
-}
+# 2. Gauge: Qual a latência da ÚLTIMA mensagem (velocímetro instantâneo)
+LATENCY_GAUGE = Gauge('ev_latency_last_ms', 'Latência End-to-End da última mensagem (ms)')
 
-def get_lag(consumer, topic: str, partition: int) -> int:
-    """Calcula o lag do consumer para uma partição."""
+# 3. Summary: Estatística (Média e Percentis) da latência
+LATENCY_SUMMARY = Summary('ev_latency_stats_ms', 'Estatísticas de latência')
+
+# --- FUNÇÕES AUXILIARES ---
+
+def get_header_value(headers, key):
+    """
+    O Kafka entrega headers como uma lista de tuplas: [('key', b'value'), ...]
+    Essa função busca o valor de uma chave específica.
+    """
+    if headers is None:
+        return None
+        
+    for h_key, h_value in headers:
+        if h_key == key:
+            return h_value.decode('utf-8') # Decodifica bytes para string
+    return None
+
+def process_message(msg):
+    """
+    Lógica de processamento da Speed Layer
+    """
+    # 1. Parse do JSON (Simulação de processamento real)
     try:
-        tp = TopicPartition(topic, partition)
-        low, high = consumer.get_watermark_offsets(tp, timeout=1.0)
-        positions = consumer.position([tp])
-        if positions and positions[0].offset >= 0:
-            return max(0, high - positions[0].offset)
-    except Exception:
-        pass
-    return 0
+        data = json.loads(msg.value().decode('utf-8'))
+        # Aqui você faria análises rápidas (ex: "Velocidade > 120?")
+    except json.JSONDecodeError:
+        print("❌ Erro ao decodificar JSON")
+        return
 
+    # 2. RASTREABILIDADE (O cálculo da Tese)
+    # Buscamos o carimbo que a Ponte colocou
+    ts_bridge_str = get_header_value(msg.headers(), 'trace_bridge_ts')
+    
+    if ts_bridge_str:
+        ts_bridge = int(ts_bridge_str)
+        ts_now = int(time.time() * 1000)
+        
+        # A Conta Mágica: Agora - Hora que chegou na ponte
+        latency_ms = ts_now - ts_bridge
+        
+        # Atualiza as métricas do Prometheus
+        LATENCY_GAUGE.set(latency_ms)
+        LATENCY_SUMMARY.observe(latency_ms)
+        
+    else:
+        print("⚠️ Mensagem sem header de rastreabilidade!")
 
-def main():
-    try:
-        start_http_server(PROMETHEUS_PORT)
-        print(f"[INFO] Prometheus metrics server em :{PROMETHEUS_PORT}")
-    except Exception as e:
-        print(f"[AVISO] Não foi possível iniciar Prometheus: {e}")
+    # Incrementa contador
+    MSG_COUNTER.inc()
 
-    consumer = Consumer(KAFKA_CONFIG)
-    consumer.subscribe(['telemetria_ev'])
+# --- MAIN LOOP ---
 
-    msg_count_window = 0
-    latencias_window = []
-    last_tick = time.time()
+if __name__ == '__main__':
+    # 1. Inicia o servidor HTTP para o Prometheus (em Thread separada)
+    print(f"📡 Iniciando servidor de métricas na porta {PROMETHEUS_PORT}...")
+    start_http_server(PROMETHEUS_PORT)
 
-    print("--- Speed Layer Consumer Iniciado ---")
+    # 2. Configura o Consumer Kafka
+    conf = {
+        'bootstrap.servers': KAFKA_BROKER,
+        'group.id': GROUP_ID,
+        'auto.offset.reset': 'latest', # Se cair, comece a ler do NOVO (Speed Layer não quer dado velho)
+        'enable.auto.commit': True     # Commit automático para simplificar
+    }
+    
+    consumer = Consumer(conf)
+    consumer.subscribe([KAFKA_TOPIC])
+    
+    print(f"👀 Speed Layer ouvindo: {KAFKA_TOPIC}...")
 
     try:
         while True:
-            msg = consumer.poll(0.1)
+            # Poll(1.0) espera até 1 segundo por uma mensagem
+            msg = consumer.poll(1.0)
 
             if msg is None:
                 continue
             if msg.error():
-                if msg.error().code() != KafkaError._PARTITION_EOF:
-                    print(f"[ERRO] Kafka: {msg.error()}")
-                continue
+                if msg.error().code() == KafkaError._PARTITION_EOF:
+                    continue
+                else:
+                    print(f"❌ Erro Consumer: {msg.error()}")
+                    continue
 
-            try:
-                payload = JSON_LOADS(msg.value())
-                ts_now = time.time()
-                ts_envio = float(payload['ts_envio'])
-
-                latencia = ts_now - ts_envio
-
-                LATENCY_METRIC.observe(latencia)
-                MESSAGES_TOTAL.inc()
-
-                msg_count_window += 1
-                latencias_window.append(latencia)
-
-                if (ts_now - last_tick) >= 1.0:
-                    lag = get_lag(consumer, msg.topic(), msg.partition())
-
-                    CONSUMER_LAG.set(lag)
-                    MSG_RATE.set(msg_count_window)
-
-                    if latencias_window:
-                        avg_lat = sum(latencias_window) / len(latencias_window)
-                        max_lat = max(latencias_window)
-                        LATENCY_AVG.set(avg_lat)
-                        LATENCY_MAX.set(max_lat)
-
-                    if lag > 2000:
-                        print(f"[ALERTA] Lag alto: {lag}")
-
-                    msg_count_window = 0
-                    latencias_window = []
-                    last_tick = ts_now
-
-            except Exception:
-                pass
+            # Se chegou mensagem válida, processa
+            process_message(msg)
 
     except KeyboardInterrupt:
-        print("\n[INFO] Encerrando Speed Layer Consumer...")
+        print("\n🛑 Parando Speed Layer...")
     finally:
         consumer.close()
-        print("[INFO] Speed Layer Consumer encerrado.")
-
-
-if __name__ == '__main__':
-    main()
